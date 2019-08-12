@@ -262,26 +262,29 @@ public final class Gradient2Limit extends AbstractLimit {
     @Override
     public int _update(final long startTime, final long rtt, final int inflight, final boolean didDrop) {
         this.lastRtt = rtt;
-        final double shortRtt = (double)rtt;
-        final double longRtt = this.longRtt.add(rtt).doubleValue();
+        final double gradient;
+        if (didDrop) {
+            gradient = 0.5;
+        } else {
+            final double shortRtt = (double)rtt;
+            double longRtt = this.longRtt.add(rtt).doubleValue();
 
-        shortRttSampleListener.addSample(shortRtt);
-        longRttSampleListener.addSample(longRtt);
+            shortRttSampleListener.addSample(shortRtt);
+            longRttSampleListener.addSample(longRtt);
+            // If the long RTT is substantially larger than the short RTT then reduce the long RTT measurement.
+            // This can happen when latency returns to normal after a prolonged prior of excessive load.  Reducing the
+            // long RTT without waiting for the exponential smoothing helps bring the system back to steady state.
+            if (longRtt / shortRtt > 2) {
+                this.longRtt.update(current -> current.doubleValue() * 0.95);
+            }
 
-        // If the long RTT is substantially larger than the short RTT then reduce the long RTT measurement.
-        // This can happen when latency returns to normal after a prolonged prior of excessive load.  Reducing the
-        // long RTT without waiting for the exponential smoothing helps bring the system back to steady state.
-        if (longRtt / shortRtt > 2) {
-            this.longRtt.update(current -> current.doubleValue() * 0.95);
+            // Rtt could be higher than longRtt because of smoothing longRtt updates
+            // so set to 1.0 to indicate no queuing.  Otherwise calculate the slope and don't
+            // allow it to be reduced by more than half to avoid aggressive load-shedding due to
+            // outliers. If a request is dropped, choose lowest gradient value to initiate
+            // load-shedding.
+            gradient = Math.max(0.5, Math.min(1.0, tolerance * longRtt / shortRtt));
         }
-
-        // Rtt could be higher than longRtt because of smoothing longRtt updates
-        // so set to 1.0 to indicate no queuing.  Otherwise calculate the slope and don't
-        // allow it to be reduced by more than half to avoid aggressive load-shedding due to
-        // outliers. If a request is dropped, choose lowest gradient value to initiate
-        // load-shedding.
-        final double gradient = didDrop ? 0.5
-                : Math.max(0.5, Math.min(1.0, tolerance * longRtt / shortRtt));
 
         double queueSize = 0;
         if (gradient == 1.0) {
